@@ -72,19 +72,19 @@ use crate::uri::{Authority, Path, Query, Data, Error, as_utf8_unchecked, fmt};
 /// `Absolute` is both `Serialize` and `Deserialize`:
 ///
 /// ```rust
-/// # #[cfg(feature = "serde")] mod serde {
-/// # use serde_ as serde;
+/// # #[cfg(feature = "serde")] mod serde_impl {
+/// # use serde as serde;
 /// use serde::{Serialize, Deserialize};
 /// use rocket::http::uri::Absolute;
 ///
 /// #[derive(Deserialize, Serialize)]
-/// # #[serde(crate = "serde_")]
+/// # #[serde(crate = "serde")]
 /// struct UriOwned {
 ///     uri: Absolute<'static>,
 /// }
 ///
 /// #[derive(Deserialize, Serialize)]
-/// # #[serde(crate = "serde_")]
+/// # #[serde(crate = "serde")]
 /// struct UriBorrowed<'a> {
 ///     uri: Absolute<'a>,
 /// }
@@ -309,10 +309,8 @@ impl<'a> Absolute<'a> {
             if !self.path().is_normalized(true) {
                 self.path = self.path().to_normalized(true, true);
             }
-        } else {
-            if !self.path().is_normalized(false) {
-                self.path = self.path().to_normalized(false, true);
-            }
+        } else if !self.path().is_normalized(false) {
+            self.path = self.path().to_normalized(false, true);
         }
 
         if let Some(query) = self.query() {

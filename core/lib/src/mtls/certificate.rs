@@ -14,8 +14,9 @@ use crate::http::Status;
 ///
 /// The request guard implementation succeeds if:
 ///
+///   * MTLS is [configured](crate::mtls).
 ///   * The client presents certificates.
-///   * The certificates are active and not yet expired.
+///   * The certificates are valid and not expired.
 ///   * The client's certificate chain was signed by the CA identified by the
 ///     configured `ca_certs` and with respect to SNI, if any. See [module level
 ///     docs](crate::mtls) for configuration details.
@@ -24,7 +25,7 @@ use crate::http::Status;
 /// status of 401 Unauthorized.
 ///
 /// If the certificate chain fails to validate or verify, the guard _fails_ with
-/// the respective [`Error`].
+/// the respective [`Error`] a status of 401 Unauthorized.
 ///
 /// # Wrapping
 ///
@@ -126,14 +127,14 @@ impl<'r> FromRequest<'r> for Certificate<'r> {
 impl<'a> Certificate<'a> {
     /// PRIVATE: For internal Rocket use only!
     fn parse<'r>(chain: &'r [CertificateDer<'r>]) -> Result<Certificate<'r>> {
-        let data = chain.first().ok_or_else(|| Error::Empty)?;
-        let x509 = Certificate::parse_one(&*data)?;
+        let data = chain.first().ok_or(Error::Empty)?;
+        let x509 = Certificate::parse_one(data)?;
         Ok(Certificate { x509, data })
     }
 
     fn parse_one(raw: &[u8]) -> Result<x509::X509Certificate<'_>> {
         use oid::OID_X509_EXT_SUBJECT_ALT_NAME as SUBJECT_ALT_NAME;
-        use x509_parser::traits::FromDer;
+        use x509::FromDer;
 
         let (left, x509) = x509::X509Certificate::from_der(raw)?;
         if !left.is_empty() {
@@ -267,7 +268,7 @@ impl<'a> Certificate<'a> {
     /// }
     /// ```
     pub fn extensions(&self) -> &[x509::X509Extension<'a>] {
-        &self.inner().extensions()
+        self.inner().extensions()
     }
 
     /// Checks if the certificate has the serial number `number`.
@@ -318,7 +319,7 @@ impl<'a> Certificate<'a> {
     /// }
     /// ```
     pub fn as_bytes(&self) -> &'a [u8] {
-        &*self.data
+        self.data
     }
 }
 

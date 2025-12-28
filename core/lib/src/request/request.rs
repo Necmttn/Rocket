@@ -1,11 +1,13 @@
-use std::fmt;
+use std::{io, fmt};
 use std::ops::RangeFrom;
 use std::sync::{Arc, atomic::Ordering};
 use std::borrow::Cow;
+use std::str::FromStr;
 use std::future::Future;
 use std::net::IpAddr;
 
-use yansi::Paint;
+use http::Version;
+use rocket_http::HttpVersion;
 use state::{TypeMap, InitCell};
 use futures::future::BoxFuture;
 use ref_swap::OptionRefSwap;
@@ -18,7 +20,7 @@ use crate::data::Limits;
 use crate::http::ProxyProto;
 use crate::http::{Method, Header, HeaderMap, ContentType, Accept, MediaType, CookieJar, Cookie};
 use crate::http::uri::{fmt::Path, Origin, Segments, Host, Authority};
-use crate::listener::{Certificates, Endpoint, Connection};
+use crate::listener::{Certificates, Endpoint};
 
 /// The type of an incoming web request.
 ///
@@ -31,6 +33,7 @@ pub struct Request<'r> {
     method: AtomicMethod,
     uri: Origin<'r>,
     headers: HeaderMap<'r>,
+    pub(crate) version: Option<HttpVersion>,
     pub(crate) errors: Vec<RequestError>,
     pub(crate) connection: ConnectionMeta,
     pub(crate) state: RequestState<'r>,
@@ -39,16 +42,22 @@ pub struct Request<'r> {
 /// Information derived from an incoming connection, if any.
 #[derive(Clone, Default)]
 pub(crate) struct ConnectionMeta {
-    pub peer_address: Option<Arc<Endpoint>>,
+    pub peer_endpoint: Option<Endpoint>,
     #[cfg_attr(not(feature = "mtls"), allow(dead_code))]
     pub peer_certs: Option<Arc<Certificates<'static>>>,
+    #[cfg_attr(feature = "tls", allow(dead_code))]
+    pub server_name: Option<String>,
 }
 
-impl<C: Connection> From<&C> for ConnectionMeta {
-    fn from(conn: &C) -> Self {
+impl ConnectionMeta {
+    pub fn new(
+        endpoint: io::Result<Endpoint>,
+        certs: Option<Certificates<'_>>,
+        server_name: Option<&str>) -> Self {
         ConnectionMeta {
-            peer_address: conn.peer_address().ok().map(Arc::new),
-            peer_certs: conn.peer_certificates().map(|c| c.into_owned()).map(Arc::new),
+            peer_endpoint: endpoint.ok(),
+            peer_certs: certs.map(|c| c.into_owned()).map(Arc::new),
+            server_name: server_name.map(|s| s.to_string()),
         }
     }
 }
@@ -84,12 +93,14 @@ impl<'r> Request<'r> {
     pub(crate) fn new<'s: 'r>(
         rocket: &'r Rocket<Orbit>,
         method: Method,
-        uri: Origin<'s>
+        uri: Origin<'s>,
+        version: Option<HttpVersion>,
     ) -> Request<'r> {
         Request {
             uri,
             method: AtomicMethod::new(method),
             headers: HeaderMap::new(),
+            version,
             errors: Vec::new(),
             connection: ConnectionMeta::default(),
             state: RequestState {
@@ -102,6 +113,22 @@ impl<'r> Request<'r> {
                 host: None,
             }
         }
+    }
+
+    /// Retrieve http protocol version, when applicable.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use rocket::http::HttpVersion;
+    ///
+    /// # let c = rocket::local::blocking::Client::debug_with(vec![]).unwrap();
+    /// # let mut req = c.get("/");
+    /// # req.override_version(HttpVersion::Http11);
+    /// assert_eq!(req.version(), Some(HttpVersion::Http11));
+    /// ```
+    pub fn version(&self) -> Option<HttpVersion> {
+        self.version
     }
 
     /// Retrieve the method from `self`.
@@ -274,6 +301,16 @@ impl<'r> Request<'r> {
         self.state.host.as_ref()
     }
 
+    /// Returns the resolved SNI server name requested in the TLS handshake, if
+    /// any.
+    ///
+    /// Ideally, this will match the `Host` header in the request.
+    #[cfg(feature = "tls")]
+    #[inline(always)]
+    pub fn sni(&mut self) -> Option<&str> {
+        self.connection.server_name.as_deref()
+    }
+
     /// Sets the host of `self` to `host`.
     ///
     /// # Example
@@ -316,20 +353,21 @@ impl<'r> Request<'r> {
     /// # Example
     ///
     /// ```rust
-    /// use std::net::{SocketAddrV4, Ipv4Addr};
+    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    /// use rocket::listener::Endpoint;
     /// # let c = rocket::local::blocking::Client::debug_with(vec![]).unwrap();
     /// # let mut req = c.get("/");
     /// # let request = req.inner_mut();
     ///
     /// assert_eq!(request.remote(), None);
     ///
-    /// let localhost = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8000);
-    /// request.set_remote(localhost);
-    /// assert_eq!(request.remote().unwrap(), &localhost);
+    /// let localhost = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8111);
+    /// request.set_remote(Endpoint::Tcp(localhost));
+    /// assert_eq!(request.remote().unwrap().tcp().unwrap(), localhost);
     /// ```
     #[inline(always)]
     pub fn remote(&self) -> Option<&Endpoint> {
-        self.connection.peer_address.as_deref()
+        self.connection.peer_endpoint.as_ref()
     }
 
     /// Sets the remote address of `self` to `address`.
@@ -339,20 +377,21 @@ impl<'r> Request<'r> {
     /// Set the remote address to be 127.0.0.1:8111:
     ///
     /// ```rust
-    /// use std::net::{SocketAddrV4, Ipv4Addr};
+    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    /// use rocket::listener::Endpoint;
     /// # let c = rocket::local::blocking::Client::debug_with(vec![]).unwrap();
     /// # let mut req = c.get("/");
     /// # let request = req.inner_mut();
     ///
     /// assert_eq!(request.remote(), None);
     ///
-    /// let localhost = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8111);
-    /// request.set_remote(localhost);
-    /// assert_eq!(request.remote().unwrap(), &localhost);
+    /// let localhost = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8111);
+    /// request.set_remote(Endpoint::Tcp(localhost));
+    /// assert_eq!(request.remote().unwrap().tcp().unwrap(), localhost);
     /// ```
     #[inline(always)]
-    pub fn set_remote<A: Into<Endpoint>>(&mut self, address: A) {
-        self.connection.peer_address = Some(Arc::new(address.into()));
+    pub fn set_remote(&mut self, endpoint: Endpoint) {
+        self.connection.peer_endpoint = Some(endpoint);
     }
 
     /// Returns the IP address of the configured
@@ -379,7 +418,7 @@ impl<'r> Request<'r> {
             .get_one(ip_header)
             .and_then(|ip| {
                 ip.parse()
-                    .map_err(|_| warn_!("'{}' header is malformed: {}", ip_header, ip))
+                    .map_err(|_| warn!(value = ip, "'{ip_header}' header is malformed"))
                     .ok()
             })
     }
@@ -491,14 +530,15 @@ impl<'r> Request<'r> {
     /// # let c = rocket::local::blocking::Client::debug_with(vec![]).unwrap();
     /// # let mut req = c.get("/");
     /// # let request = req.inner_mut();
-    /// # use std::net::{SocketAddrV4, Ipv4Addr};
+    /// # use std::net::{SocketAddr, IpAddr, Ipv4Addr};
+    /// # use rocket::listener::Endpoint;
     ///
     /// // starting without an "X-Real-IP" header or remote address
     /// assert!(request.client_ip().is_none());
     ///
     /// // add a remote address; this is done by Rocket automatically
-    /// let localhost_9190 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9190);
-    /// request.set_remote(localhost_9190);
+    /// let localhost_9190 = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9190);
+    /// request.set_remote(Endpoint::Tcp(localhost_9190));
     /// assert_eq!(request.client_ip().unwrap(), Ipv4Addr::LOCALHOST);
     ///
     /// // now with an X-Real-IP header, the default value for `ip_header`.
@@ -507,7 +547,7 @@ impl<'r> Request<'r> {
     /// ```
     #[inline]
     pub fn client_ip(&self) -> Option<IpAddr> {
-        self.real_ip().or_else(|| Some(self.remote()?.tcp()?.ip()))
+        self.real_ip().or_else(|| self.remote()?.ip())
     }
 
     /// Returns a wrapped borrow to the cookies in `self`.
@@ -653,10 +693,20 @@ impl<'r> Request<'r> {
 
     /// Returns the media type "format" of the request.
     ///
-    /// The "format" of a request is either the Content-Type, if the request
-    /// methods indicates support for a payload, or the preferred media type in
-    /// the Accept header otherwise. If the method indicates no payload and no
-    /// Accept header is specified, a media type of `Any` is returned.
+    /// The returned `MediaType` is derived from either the `Content-Type` or
+    /// the `Accept` header of the request, based on whether the request's
+    /// method allows a body (see [`Method::allows_request_body()`]). The table
+    /// below summarized this:
+    ///
+    /// | Method Allows Body | Returned Format                 |
+    /// |--------------------|---------------------------------|
+    /// | Always             | `Option<ContentType>`           |
+    /// | Maybe or Never     | `Some(Preferred Accept or Any)` |
+    ///
+    /// In short, if the request's method indicates support for a payload, the
+    /// request's `Content-Type` header value, if any, is returned. Otherwise
+    /// the [preferred](Accept::preferred()) `Accept` header value is returned,
+    /// or if none is present, [`Accept::Any`].
     ///
     /// The media type returned from this method is used to match against the
     /// `format` route attribute.
@@ -688,7 +738,7 @@ impl<'r> Request<'r> {
     /// ```
     pub fn format(&self) -> Option<&MediaType> {
         static ANY: MediaType = MediaType::Any;
-        if self.method().supports_payload() {
+        if self.method().allows_request_body().unwrap_or(false) {
             self.content_type().map(|ct| ct.media_type())
         } else {
             // TODO: Should we be using `accept_first` or `preferred`? Or
@@ -720,7 +770,7 @@ impl<'r> Request<'r> {
     /// ```
     #[inline(always)]
     pub fn rocket(&self) -> &'r Rocket<Orbit> {
-        &self.state.rocket
+        self.state.rocket
     }
 
     /// Returns the configured application data limits.
@@ -985,7 +1035,7 @@ impl<'r> Request<'r> {
     pub fn query_value<'a, T>(&'a self, name: &str) -> Option<form::Result<'a, T>>
         where T: FromForm<'a>
     {
-        if self.query_fields().find(|f| f.name == name).is_none() {
+        if !self.query_fields().any(|f| f.name == name) {
             return None;
         }
 
@@ -1028,16 +1078,16 @@ impl<'r> Request<'r> {
         self.routed_segments(0..).get(n)
     }
 
-    /// Get the segments beginning at the `n`th, 0-indexed, after the mount
+    /// Get the segments beginning at the `range`, 0-indexed, after the mount
     /// point for the currently matched route, if they exist. Used by codegen.
     #[inline]
-    pub fn routed_segments(&self, n: RangeFrom<usize>) -> Segments<'_, Path> {
+    pub fn routed_segments(&self, range: RangeFrom<usize>) -> Segments<'_, Path> {
         let mount_segments = self.route()
             .map(|r| r.uri.metadata.base_len)
             .unwrap_or(0);
 
-        trace!("requesting {}.. ({}..) from {}", n.start, mount_segments, self);
-        self.uri().path().segments().skip(mount_segments + n.start)
+        trace!(name: "segments", mount_segments, range.start);
+        self.uri().path().segments().skip(mount_segments + range.start)
     }
 
     // Retrieves the pre-parsed query items. Used by matching and codegen.
@@ -1074,7 +1124,7 @@ impl<'r> Request<'r> {
         // Keep track of parsing errors; emit a `BadRequest` if any exist.
         let mut errors = vec![];
 
-        // Ensure that the method is known. TODO: Allow made-up methods?
+        // Ensure that the method is known.
         let method = match hyper.method {
             hyper::Method::GET => Method::Get,
             hyper::Method::PUT => Method::Put,
@@ -1085,10 +1135,10 @@ impl<'r> Request<'r> {
             hyper::Method::TRACE => Method::Trace,
             hyper::Method::CONNECT => Method::Connect,
             hyper::Method::PATCH => Method::Patch,
-            _ => {
+            ref ext => Method::from_str(ext.as_str()).unwrap_or_else(|_| {
                 errors.push(RequestError::BadMethod(hyper.method.clone()));
                 Method::Get
-            }
+            }),
         };
 
         // TODO: Keep around not just the path/query, but the rest, if there?
@@ -1099,21 +1149,32 @@ impl<'r> Request<'r> {
                 // a security issue with Hyper, there isn't much we can do.
                 #[cfg(debug_assertions)]
                 if Origin::parse(uri.as_str()).is_err() {
-                    warn!("Hyper/Rocket URI validity discord: {:?}", uri.as_str());
-                    info_!("Hyper believes the URI is valid while Rocket disagrees.");
-                    info_!("This is likely a Hyper bug with potential security implications.");
-                    warn_!("Please report this warning to Rocket's GitHub issue tracker.");
+                    warn!(
+                        name: "uri_discord",
+                        %uri,
+                        "Hyper/Rocket URI validity discord: {uri}\n\
+                        Hyper believes the URI is valid while Rocket disagrees.\n\
+                        This is likely a Hyper bug with potential security implications.\n\
+                        Please report this warning to Rocket's GitHub issue tracker."
+                    )
                 }
 
                 Origin::new(uri.path(), uri.query().map(Cow::Borrowed))
             })
             .unwrap_or_else(|| {
                 errors.push(RequestError::InvalidUri(hyper.uri.clone()));
-                Origin::ROOT
+                Origin::root().clone()
             });
 
         // Construct the request object; fill in metadata and headers next.
-        let mut request = Request::new(rocket, method, uri);
+        let mut request = Request::new(rocket, method, uri, match hyper.version {
+            Version::HTTP_09 => Some(HttpVersion::Http09),
+            Version::HTTP_10 => Some(HttpVersion::Http10),
+            Version::HTTP_11 => Some(HttpVersion::Http11),
+            Version::HTTP_2 => Some(HttpVersion::Http2),
+            Version::HTTP_3 => Some(HttpVersion::Http3),
+            _ => None,
+        });
         request.errors = errors;
 
         // Set the passed in connection metadata.
@@ -1142,15 +1203,14 @@ impl<'r> Request<'r> {
         }
 
         // Set the rest of the headers. This is rather unfortunate and slow.
-        for (name, value) in hyper.headers.iter() {
+        for (header, value) in hyper.headers.iter() {
             // FIXME: This is rather unfortunate. Header values needn't be UTF8.
             let Ok(value) = std::str::from_utf8(value.as_bytes()) else {
-                warn!("Header '{}' contains invalid UTF-8", name);
-                warn_!("Rocket only supports UTF-8 header values. Dropping header.");
+                warn!(%header, "dropping header with invalid UTF-8");
                 continue;
             };
 
-            request.add_header(Header::new(name.as_str(), value));
+            request.add_header(Header::new(header.as_str(), value));
         }
 
         match request.errors.is_empty() {
@@ -1184,21 +1244,5 @@ impl fmt::Debug for Request<'_> {
             .field("remote", &self.remote())
             .field("cookies", &self.cookies())
             .finish()
-    }
-}
-
-impl fmt::Display for Request<'_> {
-    /// Pretty prints a Request. Primarily used by Rocket's logging.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {}", self.method().green(), self.uri.blue())?;
-
-        // Print the requests media type when the route specifies a format.
-        if let Some(mime) = self.format() {
-            if !mime.is_any() {
-                write!(f, " {}/{}", mime.top().yellow().linger(), mime.sub().clear())?;
-            }
-        }
-
-        Ok(())
     }
 }

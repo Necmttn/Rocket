@@ -673,3 +673,55 @@ fn test_route_uri_normalization_with_prefix() {
         uri!("/foo/bar/", world()) => "/foo/bar/world",
     }
 }
+
+#[test]
+fn test_vec_in_query() {
+    #[post("/?<v>")]
+    fn f(v: Vec<usize>) { }
+
+    #[post("/?<v>")]
+    fn g(v: Vec<String>) { }
+
+    #[post("/?<v>")]
+    fn h(v: &[u8]) { }
+
+    let bytes = vec![0u8, 1, 2];
+    assert_uri_eq! {
+        uri!(f(v = vec![1, 2, 3])) => "/?v=1&v=2&v=3",
+        uri!(f(v = &vec![1, 2, 3])) => "/?v=1&v=2&v=3",
+        uri!(f(v = &[1, 2, 3])) => "/?v=1&v=2&v=3",
+        uri!(f(v = [1, 2, 3])) => "/?v=1&v=2&v=3",
+
+        uri!(f(vec![1, 2, 3])) => "/?v=1&v=2&v=3",
+        uri!(f(&vec![1, 2, 3])) => "/?v=1&v=2&v=3",
+        uri!(f(&[1, 2, 3])) => "/?v=1&v=2&v=3",
+        uri!(f([1, 2, 3])) => "/?v=1&v=2&v=3",
+
+        // TODO: Introduce `RawBytes` + FromUriParam + UriDisplay impls.
+        // uri!(f(v = &[1, 2, 3][..])) => "/?v=1&v=2&v=3",
+
+        uri!(g(v = vec!["a", "b=c", "d"])) => "/?v=a&v=b%3Dc&v=d",
+        uri!(g(v = &vec!["a", "b=c", "d"])) => "/?v=a&v=b%3Dc&v=d",
+        uri!(g(v = ["a", "b=c", "d"])) => "/?v=a&v=b%3Dc&v=d",
+        uri!(g(v = &["a", "b=c", "d"])) => "/?v=a&v=b%3Dc&v=d",
+
+        uri!(h(v = bytes.as_slice())) => "/?v=%00%01%02",
+        uri!(h(v = &[1, 2, 3][..])) => "/?v=%01%02%03",
+    }
+}
+
+#[test]
+fn test_either() {
+    use rocket::either::{Either, Left, Right};
+
+    #[get("/<_foo>")]
+    fn f(_foo: Either<usize, &str>) { }
+
+    assert_uri_eq! {
+        uri!(f(Left::<usize, &str>(123))) => "/123",
+        uri!(f(_foo = Left::<usize, &str>(710))) => "/710",
+
+        uri!(f(Right::<usize, &str>("hello world"))) => "/hello%20world",
+        uri!(f(_foo = Right::<usize, &str>("bye?"))) => "/bye%3F",
+    }
+}

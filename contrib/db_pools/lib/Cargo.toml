@@ -13,18 +13,21 @@ rust-version = "1.75"
 [package.metadata.docs.rs]
 all-features = true
 
+[lints]
+workspace = true
+
 [features]
 # deadpool features
 deadpool_postgres = ["deadpool-postgres", "deadpool"]
 deadpool_redis = ["deadpool-redis", "deadpool"]
 # sqlx features
-sqlx_mysql = ["sqlx", "sqlx/mysql"]
-sqlx_postgres = ["sqlx", "sqlx/postgres"]
-sqlx_sqlite = ["sqlx", "sqlx/sqlite"]
+sqlx_mysql = ["sqlx", "sqlx/mysql", "log"]
+sqlx_postgres = ["sqlx", "sqlx/postgres", "log"]
+sqlx_sqlite = ["sqlx", "sqlx/sqlite", "log"]
 sqlx_macros = ["sqlx/macros"]
 # diesel features
-diesel_postgres = ["diesel-async/postgres", "diesel-async/deadpool", "diesel", "deadpool_09"]
-diesel_mysql = ["diesel-async/mysql", "diesel-async/deadpool", "diesel", "deadpool_09"]
+diesel_postgres = ["diesel-async/postgres", "diesel-async/deadpool", "deadpool", "diesel"]
+diesel_mysql = ["diesel-async/mysql", "diesel-async/deadpool", "deadpool", "diesel"]
 # implicit features: mongodb
 
 [dependencies.rocket]
@@ -36,40 +39,34 @@ default-features = false
 path = "../codegen"
 version = "0.1.0"
 
-[dependencies.deadpool_09]
-package = "deadpool"
-version = "0.9"
+[dependencies.deadpool]
+version = "0.12.1"
 default-features = false
 features = ["rt_tokio_1", "managed"]
 optional = true
 
 [dependencies.deadpool-postgres]
-version = "0.12"
-default-features = false
-features = ["rt_tokio_1"]
-optional = true
-
-[dependencies.deadpool]
-version = "0.10"
-default-features = false
-features = ["rt_tokio_1", "managed"]
-optional = true
-
-[dependencies.deadpool-redis]
 version = "0.14"
 default-features = false
 features = ["rt_tokio_1"]
 optional = true
 
-[dependencies.mongodb]
-version = "2"
+[dependencies.deadpool-redis]
+version = "0.16"
 default-features = false
-features = ["tokio-runtime"]
+features = ["rt_tokio_1"]
+optional = true
+
+[dependencies.mongodb]
+version = "3"
+default-features = false
+features = ["compat-3-0-0", "rustls-tls"]
 optional = true
 
 [dependencies.diesel-async]
-version = "0.4.1"
+version = "0.6.0"
 default-features = false
+features = ["async-connection-wrapper"]
 optional = true
 
 [dependencies.diesel]
@@ -78,9 +75,14 @@ default-features = false
 optional = true
 
 [dependencies.sqlx]
-version = "0.7"
+version = "0.8"
 default-features = false
 features = ["runtime-tokio-rustls"]
+optional = true
+
+[dependencies.log]
+version = "0.4"
+default-features = false
 optional = true
 
 [dev-dependencies.rocket]

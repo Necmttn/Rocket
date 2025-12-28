@@ -130,7 +130,7 @@ impl<'v> Context<'v> {
     /// }
     /// ```
     pub fn field_value<N: AsRef<Name>>(&self, name: N) -> Option<&'v str> {
-        self.values.get(name.as_ref())?.get(0).cloned()
+        self.values.get(name.as_ref())?.first().cloned()
     }
 
     /// Returns the values, if any, submitted for the _value_ field named
@@ -179,8 +179,7 @@ impl<'v> Context<'v> {
     /// ```
     pub fn errors(&self) -> impl Iterator<Item = &Error<'v>> {
         self.errors.values()
-            .map(|e| e.iter())
-            .flatten()
+            .flat_map(|e| e.iter())
             .chain(self.form_errors.iter())
     }
 
@@ -220,12 +219,11 @@ impl<'v> Context<'v> {
     ///     let foo_bar = form.context.field_errors("foo.bar");
     /// }
     /// ```
-    pub fn field_errors<'a, N>(&'a self, name: N) -> impl Iterator<Item = &Error<'v>> + '_
+    pub fn field_errors<'a, N>(&'a self, name: N) -> impl Iterator<Item = &'a Error<'v>> + 'a
         where N: AsRef<Name> + 'a
     {
         self.errors.values()
-            .map(|e| e.iter())
-            .flatten()
+            .flat_map(|e| e.iter())
             .filter(move |e| e.is_for(&name))
     }
 
@@ -269,12 +267,11 @@ impl<'v> Context<'v> {
     ///     let foo_bar = form.context.exact_field_errors("foo.bar");
     /// }
     /// ```
-    pub fn exact_field_errors<'a, N>(&'a self, name: N) -> impl Iterator<Item = &Error<'v>> + '_
+    pub fn exact_field_errors<'a, N>(&'a self, name: N) -> impl Iterator<Item = &'a Error<'v>> + 'a
         where N: AsRef<Name> + 'a
     {
         self.errors.values()
-            .map(|e| e.iter())
-            .flatten()
+            .flat_map(|e| e.iter())
             .filter(move |e| e.is_for_exactly(&name))
     }
 

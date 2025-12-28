@@ -1,5 +1,5 @@
-#[cfg(all(feature = "diesel_sqlite_pool"))]
 #[cfg(test)]
+#[cfg(all(feature = "diesel_sqlite_pool"))]
 mod sqlite_shutdown_test {
     use rocket::{async_test, Build, Rocket};
     use rocket_sync_db_pools::database;
@@ -12,6 +12,7 @@ mod sqlite_shutdown_test {
 
         let options = map!["url" => ":memory:"];
         let config = Figment::from(rocket::Config::debug_default())
+            .merge(("port", 0))
             .merge(("databases", map!["test" => &options]));
 
         rocket::custom(config).attach(Pool::fairing())

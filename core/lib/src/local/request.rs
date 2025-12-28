@@ -99,26 +99,27 @@ macro_rules! pub_request_impl {
 
     /// Set the remote address of this request to `address`.
     ///
-    /// `address` may be any type that [can be converted into a `ListenerAddr`].
+    /// `address` may be any type that [can be converted into a `Endpoint`].
     /// If `address` fails to convert, the remote is left unchanged.
     ///
-    /// [can be converted into a `ListenerAddr`]: crate::listener::ListenerAddr#conversions
+    /// [can be converted into a `Endpoint`]: crate::listener::Endpoint#conversions
     ///
     /// # Examples
     ///
     /// Set the remote address to "8.8.8.8:80":
     ///
     /// ```rust
-    /// use std::net::{SocketAddrV4, Ipv4Addr};
+    /// use std::net::Ipv4Addr;
     ///
     #[doc = $import]
     ///
     /// # Client::_test(|_, request, _| {
     /// let request: LocalRequest = request;
-    /// let req = request.remote("8.8.8.8:80");
+    /// let req = request.remote("tcp:8.8.8.8:80");
     ///
-    /// let addr = SocketAddrV4::new(Ipv4Addr::new(8, 8, 8, 8).into(), 80);
-    /// assert_eq!(req.inner().remote().unwrap(), &addr);
+    /// let remote = req.inner().remote().unwrap().tcp().unwrap();
+    /// assert_eq!(remote.ip(), Ipv4Addr::new(8, 8, 8, 8));
+    /// assert_eq!(remote.port(), 80);
     /// # });
     /// ```
     #[inline]
@@ -245,12 +246,14 @@ macro_rules! pub_request_impl {
     #[cfg_attr(nightly, doc(cfg(feature = "mtls")))]
     pub fn identity<C: std::io::Read>(mut self, reader: C) -> Self {
         use std::sync::Arc;
-        use crate::tls::util::load_cert_chain;
         use crate::listener::Certificates;
 
         let mut reader = std::io::BufReader::new(reader);
-        let certs = load_cert_chain(&mut reader).map(Certificates::from);
-        self._request_mut().connection.peer_certs = certs.ok().map(Arc::new);
+        self._request_mut().connection.peer_certs = rustls_pemfile::certs(&mut reader)
+            .collect::<Result<Vec<_>, _>>()
+            .map(|certs| Arc::new(Certificates::from(certs)))
+            .ok();
+
         self
     }
 

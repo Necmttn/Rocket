@@ -1,7 +1,7 @@
 use crate::catcher::Catcher;
 use crate::route::{Route, Segment, RouteUri};
 
-use crate::http::MediaType;
+use crate::http::{MediaType, Method};
 
 pub trait Collide<T = Self> {
     fn collides_with(&self, other: &T) -> bool;
@@ -87,7 +87,7 @@ impl Route {
     /// assert!(a.collides_with(&b));
     /// ```
     pub fn collides_with(&self, other: &Route) -> bool {
-        self.method == other.method
+        methods_collide(self, other)
             && self.rank == other.rank
             && self.uri.collides_with(&other.uri)
             && formats_collide(self, other)
@@ -148,14 +148,14 @@ impl Catcher {
 impl Collide for Route {
     #[inline(always)]
     fn collides_with(&self, other: &Route) -> bool {
-        Route::collides_with(&self, other)
+        Route::collides_with(self, other)
     }
 }
 
 impl Collide for Catcher {
     #[inline(always)]
     fn collides_with(&self, other: &Self) -> bool {
-        Catcher::collides_with(&self, other)
+        Catcher::collides_with(self, other)
     }
 }
 
@@ -190,21 +190,28 @@ impl Collide for MediaType {
     }
 }
 
-fn formats_collide(route: &Route, other: &Route) -> bool {
-    // If the routes' method doesn't support a payload, then format matching
-    // considers the `Accept` header. The client can always provide a media type
-    // that will cause a collision through non-specificity, i.e, `*/*`.
-    if !route.method.supports_payload() && !other.method.supports_payload() {
-        return true;
+fn methods_collide(route: &Route, other: &Route) -> bool {
+    match (route.method, other.method) {
+        (Some(a), Some(b)) => a == b,
+        (None, _) | (_, None) => true,
     }
+}
 
-    // Payload supporting methods match against `Content-Type`. We only
-    // consider requests as having a `Content-Type` if they're fully
-    // specified. A route without a `format` accepts all `Content-Type`s. A
-    // request without a format only matches routes without a format.
-    match (route.format.as_ref(), other.format.as_ref()) {
-        (Some(a), Some(b)) => a.collides_with(b),
-        _ => true
+fn formats_collide(route: &Route, other: &Route) -> bool {
+    let payload_support = |m: &Option<Method>| m.and_then(|m| m.allows_request_body());
+    match (payload_support(&route.method), payload_support(&other.method)) {
+        // Payload supporting methods match against `Content-Type` which must be
+        // fully specified, so the request cannot contain a format that matches
+        // more than one route format as long as those formats don't collide.
+        (Some(true), Some(true)) => match (route.format.as_ref(), other.format.as_ref()) {
+            (Some(a), Some(b)) => a.collides_with(b),
+            // A route without a `format` accepts all `Content-Type`s.
+            _ => true
+        },
+        // When a request method may not support a payload, the `Accept` header
+        // is considered during matching. The header can always be `*/*`, which
+        // would match any format. Thus two such routes would always collide.
+        _ => true,
     }
 }
 
@@ -213,8 +220,8 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use crate::route::{Route, dummy_handler};
-    use crate::http::{Method, Method::*, MediaType};
+    use crate::route::dummy_handler;
+    use crate::http::{Method, Method::*};
 
     fn dummy_route(ranked: bool, method: impl Into<Option<Method>>, uri: &'static str) -> Route {
         let method = method.into().unwrap_or(Get);
@@ -227,7 +234,7 @@ mod tests {
             let (a, b) = (dummy_route($ranked, $m1, $p1), dummy_route($ranked, $m2, $p2));
             assert! {
                 a.collides_with(&b),
-                "\nroutes failed to collide:\n{} does not collide with {}\n", a, b
+                "\nroutes failed to collide:\n{:?} does not collide with {:?}\n", a, b
             }
         };
         (ranked $($t:tt)+) => (assert_collision!(true, $($t)+));
@@ -240,7 +247,7 @@ mod tests {
             let (a, b) = (dummy_route($ranked, $m1, $p1), dummy_route($ranked, $m2, $p2));
             assert! {
                 !a.collides_with(&b),
-                "\nunexpected collision:\n{} collides with {}\n", a, b
+                "\nunexpected collision:\n{:?} collides with {:?}\n", a, b
             }
         };
         (ranked $($t:tt)+) => (assert_no_collision!(true, $($t)+));

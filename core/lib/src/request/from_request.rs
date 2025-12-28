@@ -1,6 +1,6 @@
-use std::convert::Infallible;
 use std::fmt::Debug;
-use std::net::IpAddr;
+use std::convert::Infallible;
+use std::net::{IpAddr, SocketAddr};
 
 use crate::{Request, Route};
 use crate::outcome::{self, IntoOutcome, Outcome::*};
@@ -144,14 +144,14 @@ pub type Outcome<S, E> = outcome::Outcome<S, (Status, E), Status>;
 ///
 ///   * **&ContentType**
 ///
-///     Extracts the [`ContentType`] from the incoming request via
+///     Extracts the [`ContentType`] header from the incoming request via
 ///     [`Request::content_type()`]. If the request didn't specify a
 ///     Content-Type, the request is forwarded with a 500 Internal Server Error
 ///     status.
 ///
-///   * **&ContentType**
+///   * **&Accept**
 ///
-///     Extracts the [`Accept`] from the incoming request via
+///     Extracts the [`Accept`] header from the incoming request via
 ///     [`Request::accept()`]. If the request didn't specify an `Accept`, the
 ///     request is forwarded with a 500 Internal Server Error status.
 ///
@@ -496,12 +496,12 @@ impl<'r> FromRequest<'r> for &'r Endpoint {
 }
 
 #[crate::async_trait]
-impl<'r> FromRequest<'r> for std::net::SocketAddr {
+impl<'r> FromRequest<'r> for SocketAddr {
     type Error = Infallible;
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Infallible> {
         request.remote()
-            .and_then(|r| r.tcp())
+            .and_then(|r| r.socket_addr())
             .or_forward(Status::InternalServerError)
     }
 }

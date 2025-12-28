@@ -3,6 +3,8 @@ use std::io;
 use figment::value::magic::{RelativePathBuf, Either};
 use serde::{Serialize, Deserialize};
 
+use crate::tls::{Result, Error};
+
 /// Mutual TLS configuration.
 ///
 /// Configuration works in concert with the [`mtls`](crate::mtls) module, which
@@ -77,8 +79,8 @@ pub struct MtlsConfig {
 impl MtlsConfig {
     /// Constructs a `MtlsConfig` from a path to a PEM file with a certificate
     /// authority `ca_certs` DER-encoded X.509 TLS certificate chain. This
-    /// method does no validation; it simply creates a structure suitable for
-    /// passing into a [`TlsConfig`].
+    /// method does no validation; it simply creates an [`MtlsConfig`] for later
+    /// use.
     ///
     /// These certificates will be used to verify client-presented certificates
     /// in TLS connections.
@@ -99,8 +101,7 @@ impl MtlsConfig {
 
     /// Constructs a `MtlsConfig` from a byte buffer to a certificate authority
     /// `ca_certs` DER-encoded X.509 TLS certificate chain. This method does no
-    /// validation; it simply creates a structure suitable for passing into a
-    /// [`TlsConfig`].
+    /// validation; it simply creates an [`MtlsConfig`] for later use.
     ///
     /// These certificates will be used to verify client-presented certificates
     /// in TLS connections.
@@ -142,6 +143,7 @@ impl MtlsConfig {
     }
 
     /// Returns the value of the `ca_certs` parameter.
+    ///
     /// # Example
     ///
     /// ```rust
@@ -154,13 +156,23 @@ impl MtlsConfig {
     pub fn ca_certs(&self) -> either::Either<std::path::PathBuf, &[u8]> {
         match &self.ca_certs {
             Either::Left(path) => either::Either::Left(path.relative()),
-            Either::Right(bytes) => either::Either::Right(&bytes),
+            Either::Right(bytes) => either::Either::Right(bytes),
         }
     }
 
     #[inline(always)]
     pub fn ca_certs_reader(&self) -> io::Result<Box<dyn io::BufRead + Sync + Send>> {
         crate::tls::config::to_reader(&self.ca_certs)
+    }
+
+    /// Load and decode CA certificates from `reader`.
+    pub(crate) fn load_ca_certs(&self) -> Result<rustls::RootCertStore> {
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in rustls_pemfile::certs(&mut self.ca_certs_reader()?) {
+            roots.add(cert?).map_err(Error::CertAuth)?;
+        }
+
+        Ok(roots)
     }
 }
 

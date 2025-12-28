@@ -2,8 +2,9 @@ use state::TypeMap;
 use figment::Figment;
 
 use crate::listener::Endpoint;
-use crate::{Catcher, Config, Rocket, Route, Shutdown};
-use crate::router::Router;
+use crate::shutdown::Stages;
+use crate::{Catcher, Config, Rocket, Route};
+use crate::router::{Router, Finalized};
 use crate::fairing::Fairings;
 
 mod private {
@@ -13,7 +14,8 @@ mod private {
 #[doc(hidden)]
 pub trait Stateful: private::Sealed {
     fn into_state(self) -> State;
-    fn as_state_ref(&self) -> StateRef<'_>;
+    fn as_ref(&self) -> StateRef<'_>;
+    fn as_mut(&mut self) -> StateRefMut<'_>;
 }
 
 /// A marker trait for Rocket's launch phases.
@@ -47,7 +49,8 @@ macro_rules! phase {
 
         impl Stateful for $S {
             fn into_state(self) -> State { State::$P(self) }
-            fn as_state_ref(&self) -> StateRef<'_> { StateRef::$P(self) }
+            fn as_ref(&self) -> StateRef<'_> { StateRef::$P(self) }
+            fn as_mut(&mut self) -> StateRefMut<'_> { StateRefMut::$P(self) }
         }
 
         #[doc(hidden)]
@@ -68,6 +71,9 @@ macro_rules! phases {
 
         #[doc(hidden)]
         pub enum StateRef<'a> { $($P(&'a $S)),* }
+
+        #[doc(hidden)]
+        pub enum StateRefMut<'a> { $($P(&'a mut $S)),* }
 
         $(phase!($(#[$o])* $P ($(#[$i])* $S) { $($fields)* });)*
     )
@@ -94,12 +100,12 @@ phases! {
     /// represents a fully built and finalized application server ready for
     /// launch into orbit. See [`Rocket#ignite`] for full details.
     Ignite (#[derive(Debug)] Igniting) {
-        pub(crate) router: Router,
+        pub(crate) router: Router<Finalized>,
         pub(crate) fairings: Fairings,
         pub(crate) figment: Figment,
         pub(crate) config: Config,
         pub(crate) state: TypeMap![Send + Sync],
-        pub(crate) shutdown: Shutdown,
+        pub(crate) shutdown: Stages,
     }
 
     /// The final launch [`Phase`]. See [Rocket#orbit](`Rocket#orbit`) for
@@ -108,12 +114,12 @@ phases! {
     /// An instance of `Rocket` in this phase is typed as [`Rocket<Orbit>`] and
     /// represents a running application.
     Orbit (#[derive(Debug)] Orbiting) {
-        pub(crate) router: Router,
+        pub(crate) router: Router<Finalized>,
         pub(crate) fairings: Fairings,
         pub(crate) figment: Figment,
         pub(crate) config: Config,
         pub(crate) state: TypeMap![Send + Sync],
-        pub(crate) shutdown: Shutdown,
-        pub(crate) endpoint: Endpoint,
+        pub(crate) shutdown: Stages,
+        pub(crate) endpoints: Vec<Endpoint>,
     }
 }

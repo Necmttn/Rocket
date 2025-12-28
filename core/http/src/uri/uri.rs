@@ -79,7 +79,7 @@ impl<'a> Uri<'a> {
     /// // Invalid URIs fail to parse.
     /// Uri::parse::<Origin>("foo bar").expect_err("invalid URI");
     /// ```
-    pub fn parse<T>(string: &'a str) -> Result<Uri<'a>, Error<'_>>
+    pub fn parse<T>(string: &'a str) -> Result<Uri<'a>, Error<'a>>
         where T: Into<Uri<'a>> + TryFrom<&'a str, Error = Error<'a>>
     {
         T::try_from(string).map(|v| v.into())
@@ -127,7 +127,7 @@ impl<'a> Uri<'a> {
     /// let uri: Origin = uri!("/a/b/c?query");
     /// let uri: Reference = uri!("/a/b/c?query#fragment");
     /// ```
-    pub fn parse_any(string: &'a str) -> Result<Uri<'a>, Error<'_>> {
+    pub fn parse_any(string: &'a str) -> Result<Uri<'a>, Error<'a>> {
         crate::parse::uri::from_str(string)
     }
 
@@ -334,6 +334,24 @@ macro_rules! impl_uri_from {
                 }
             }
         }
+
+        impl<'b, $($lt)?> PartialEq<&$T $(<$lt>)?> for Uri<'b> {
+            fn eq(&self, other: &&$T $(<$lt>)?) -> bool {
+                match self {
+                    Uri::$T(inner) => inner == *other,
+                    _ => false
+                }
+            }
+        }
+
+        impl<'b, $($lt)?> PartialEq<Uri<'b>> for &$T $(<$lt>)? {
+            fn eq(&self, other: &Uri<'b>) -> bool {
+                match other {
+                    Uri::$T(inner) => inner == *self,
+                    _ => false
+                }
+            }
+        }
     )
 }
 
@@ -347,13 +365,13 @@ impl_uri_from!(Asterisk);
 macro_rules! impl_serde {
     ($T:ty, $expected:literal) => {
         #[cfg(feature = "serde")]
-        mod serde {
+        mod serde_impl {
             use std::fmt;
             use std::marker::PhantomData;
             use super::*;
 
-            use serde_::ser::{Serialize, Serializer};
-            use serde_::de::{Deserialize, Deserializer, Error, Visitor};
+            use serde::ser::{Serialize, Serializer};
+            use serde::de::{Deserialize, Deserializer, Error, Visitor};
 
             impl<'a> Serialize for $T {
                 fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

@@ -59,12 +59,12 @@ impl Client {
         tracked: bool,
         secure: bool,
     ) -> Result<Client, Error> {
-        let mut listener = Endpoint::new("local client");
+        let mut endpoint = Endpoint::new("local client");
         if secure {
-            listener = listener.assume_tls();
+            endpoint = endpoint.assume_tls();
         }
 
-        let rocket = rocket.local_launch(listener).await?;
+        let rocket = rocket.local_launch(endpoint).await?;
         let cookies = RwLock::new(cookie::CookieJar::new());
         Ok(Client { rocket, cookies, tracked })
     }
@@ -92,14 +92,14 @@ impl Client {
     pub(crate) fn _with_raw_cookies<F, T>(&self, f: F) -> T
         where F: FnOnce(&cookie::CookieJar) -> T
     {
-        f(&*self.cookies.read())
+        f(&self.cookies.read())
     }
 
     #[inline(always)]
     pub(crate) fn _with_raw_cookies_mut<F, T>(&self, f: F) -> T
         where F: FnOnce(&mut cookie::CookieJar) -> T
     {
-        f(&mut *self.cookies.write())
+        f(&mut self.cookies.write())
     }
 
     #[inline(always)]
@@ -113,7 +113,7 @@ impl Client {
         let rocket = self.rocket;
         rocket.shutdown().notify();
         rocket.fairings.handle_shutdown(&rocket).await;
-        rocket.into_ignite()
+        rocket.deorbit()
     }
 
     // Generates the public API methods, which call the private methods above.

@@ -6,11 +6,6 @@
 #![cfg_attr(nightly, feature(doc_cfg))]
 #![cfg_attr(nightly, feature(decl_macro))]
 
-#![warn(rust_2018_idioms)]
-// #![warn(missing_docs)]
-#![allow(async_fn_in_trait)]
-#![allow(refining_impl_trait)]
-
 //! # Rocket - Core API Documentation
 //!
 //! Hello, and welcome to the core Rocket API documentation!
@@ -58,18 +53,21 @@
 //!
 //! ## Features
 //!
-//! To avoid compiling unused dependencies, Rocket gates certain features. With
-//! the exception of `http2`, all are disabled by default:
+//! To avoid compiling unused dependencies, Rocket feature-gates optional
+//! functionality, some enabled by default:
 //!
-//! | Feature   | Description                                             |
-//! |-----------|---------------------------------------------------------|
-//! | `secrets` | Support for authenticated, encrypted [private cookies]. |
-//! | `tls`     | Support for [TLS] encrypted connections.                |
-//! | `mtls`    | Support for verified clients via [mutual TLS].          |
-//! | `http2`   | Support for HTTP/2 (enabled by default).                |
-//! | `json`    | Support for [JSON (de)serialization].                   |
-//! | `msgpack` | Support for [MessagePack (de)serialization].            |
-//! | `uuid`    | Support for [UUID value parsing and (de)serialization]. |
+//! | Feature         | Default? | Description                                             |
+//! |-----------------|----------|---------------------------------------------------------|
+//! | `trace`         | Yes      | Enables the default Rocket tracing [subscriber].        |
+//! | `http2`         | Yes      | Support for HTTP/2 (enabled by default).                |
+//! | `secrets`       | No       | Support for authenticated, encrypted [private cookies]. |
+//! | `tls`           | No       | Support for [TLS] encrypted connections.                |
+//! | `mtls`          | No       | Support for verified clients via [mutual TLS].          |
+//! | `json`          | No       | Support for [JSON (de)serialization].                   |
+//! | `msgpack`       | No       | Support for [MessagePack (de)serialization].            |
+//! | `uuid`          | No       | Support for [UUID value parsing and (de)serialization]. |
+//! | `tokio-macros`  | No       | Enables the `macros` feature in the exported `tokio`    |
+//! | `http3-preview` | No       | Experimental preview support for [HTTP/3].              |
 //!
 //! Disabled features can be selectively enabled in `Cargo.toml`:
 //!
@@ -85,12 +83,14 @@
 //! rocket = { version = "0.6.0-dev", default-features = false }
 //! ```
 //!
+//! [subscriber]: crate::trace::subscriber
 //! [JSON (de)serialization]: crate::serde::json
 //! [MessagePack (de)serialization]: crate::serde::msgpack
 //! [UUID value parsing and (de)serialization]: crate::serde::uuid
 //! [private cookies]: https://rocket.rs/master/guide/requests/#private-cookies
 //! [TLS]: https://rocket.rs/master/guide/configuration/#tls
 //! [mutual TLS]: crate::mtls
+//! [HTTP/3]: crate::listener::quic
 //!
 //! ## Configuration
 //!
@@ -109,6 +109,9 @@
 //! [testing guide]: https://rocket.rs/master/guide/testing/#testing
 //! [Figment]: https://docs.rs/figment
 
+// Allows using Rocket's codegen in Rocket itself.
+extern crate self as rocket;
+
 /// These are public dependencies! Update docs if these are changed, especially
 /// figment's version number in docs.
 #[doc(hidden)]
@@ -119,10 +122,11 @@ pub use futures;
 pub use tokio;
 pub use figment;
 pub use time;
+pub use tracing;
+pub use either;
 
-#[doc(hidden)]
 #[macro_use]
-pub mod log;
+pub mod trace;
 #[macro_use]
 pub mod outcome;
 #[macro_use]
@@ -143,6 +147,7 @@ pub mod shield;
 pub mod fs;
 pub mod http;
 pub mod listener;
+pub mod shutdown;
 #[cfg(feature = "tls")]
 #[cfg_attr(nightly, doc(cfg(feature = "tls")))]
 pub mod tls;
@@ -150,17 +155,15 @@ pub mod tls;
 #[cfg_attr(nightly, doc(cfg(feature = "mtls")))]
 pub mod mtls;
 
+#[path = "rocket.rs"]
+mod rkt;
 mod util;
-mod shutdown;
 mod server;
 mod lifecycle;
 mod state;
-mod rocket;
 mod router;
 mod phase;
 mod erased;
-
-#[doc(hidden)] pub use either::Either;
 
 #[doc(inline)] pub use rocket_codegen::*;
 
@@ -171,9 +174,9 @@ mod erased;
 #[doc(inline)] pub use crate::route::Route;
 #[doc(inline)] pub use crate::phase::{Phase, Build, Ignite, Orbit};
 #[doc(inline)] pub use crate::error::Error;
-#[doc(inline)] pub use crate::sentinel::Sentinel;
+#[doc(inline)] pub use crate::sentinel::{Sentinel, Sentry};
 #[doc(inline)] pub use crate::request::Request;
-#[doc(inline)] pub use crate::rocket::Rocket;
+#[doc(inline)] pub use crate::rkt::Rocket;
 #[doc(inline)] pub use crate::shutdown::Shutdown;
 #[doc(inline)] pub use crate::state::State;
 
@@ -206,7 +209,7 @@ mod erased;
 #[doc(inline)]
 pub use async_trait::async_trait;
 
-const WORKER_PREFIX: &'static str = "rocket-worker";
+const WORKER_PREFIX: &str = "rocket-worker";
 
 /// Creates a [`Rocket`] instance with the default config provider: aliases
 /// [`Rocket::build()`].
@@ -250,6 +253,11 @@ pub fn async_test<R>(fut: impl std::future::Future<Output = R>) -> R {
 /// WARNING: This is unstable! Do not use this method outside of Rocket!
 #[doc(hidden)]
 pub fn async_main<R>(fut: impl std::future::Future<Output = R> + Send) -> R {
+    fn bail<T, E: crate::trace::Trace>(e: E) -> T {
+        e.trace_error();
+        panic!("aborting due to error")
+    }
+
     // FIXME: We need to run `fut` to get the user's `Figment` to properly set
     // up the async env, but we need the async env to run `fut`. So we're stuck.
     // Tokio doesn't let us take the state from one async env and migrate it to
@@ -259,8 +267,6 @@ pub fn async_main<R>(fut: impl std::future::Future<Output = R> + Send) -> R {
     // values won't reflect swaps of `Rocket` in attach fairings with different
     // config values, or values from non-Rocket configs. See tokio-rs/tokio#3329
     // for a necessary resolution in `tokio`.
-    use config::bail_with_config_error as bail;
-
     let fig = Config::figment();
     let workers = fig.extract_inner(Config::WORKERS).unwrap_or_else(bail);
     let max_blocking = fig.extract_inner(Config::MAX_BLOCKING).unwrap_or_else(bail);
@@ -349,7 +355,7 @@ pub fn execute<R, F>(future: F) -> R
     async_main(future)
 }
 
-/// Returns a future that evalutes to `true` exactly when there is a presently
+/// Returns a future that evaluates to `true` exactly when there is a presently
 /// running tokio async runtime that was likely started by Rocket.
 fn running_within_rocket_async_rt() -> impl std::future::Future<Output = bool> {
     use futures::FutureExt;

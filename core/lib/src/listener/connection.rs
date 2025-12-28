@@ -1,8 +1,8 @@
 use std::io;
 use std::borrow::Cow;
 
-use tokio_util::either::Either;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_util::either::Either;
 
 use super::Endpoint;
 
@@ -11,7 +11,7 @@ use super::Endpoint;
 pub struct Certificates<'r>(Cow<'r, [der::CertificateDer<'r>]>);
 
 pub trait Connection: AsyncRead + AsyncWrite + Send + Unpin {
-    fn peer_address(&self) -> io::Result<Endpoint>;
+    fn endpoint(&self) -> io::Result<Endpoint>;
 
     /// DER-encoded X.509 certificate chain presented by the client, if any.
     ///
@@ -21,28 +21,30 @@ pub trait Connection: AsyncRead + AsyncWrite + Send + Unpin {
     ///
     /// Defaults to an empty vector to indicate that no certificates were
     /// presented.
-    fn peer_certificates(&self) -> Option<Certificates<'_>> { None }
+    fn certificates(&self) -> Option<Certificates<'_>> { None }
+
+    fn server_name(&self) -> Option<&str> { None }
 }
 
 impl<A: Connection, B: Connection> Connection for Either<A, B> {
-    fn peer_address(&self) -> io::Result<Endpoint> {
+    fn endpoint(&self) -> io::Result<Endpoint> {
         match self {
-            Either::Left(c) => c.peer_address(),
-            Either::Right(c) => c.peer_address(),
+            Either::Left(c) => c.endpoint(),
+            Either::Right(c) => c.endpoint(),
         }
     }
 
-    fn peer_certificates(&self) -> Option<Certificates<'_>> {
+    fn certificates(&self) -> Option<Certificates<'_>> {
         match self {
-            Either::Left(c) => c.peer_certificates(),
-            Either::Right(c) => c.peer_certificates(),
+            Either::Left(c) => c.certificates(),
+            Either::Right(c) => c.certificates(),
         }
     }
 }
 
 impl Certificates<'_> {
     pub fn into_owned(self) -> Certificates<'static> {
-        let cow = self.0.into_iter()
+        let cow = self.0.iter()
             .map(|der| der.clone().into_owned())
             .collect::<Vec<_>>()
             .into();

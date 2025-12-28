@@ -176,7 +176,7 @@ impl<'a> CookieJar<'a> {
             ops: Mutex::new(Vec::new()),
             state: CookieState {
                 // This is updated dynamically when headers are received.
-                secure: rocket.endpoint().is_tls(),
+                secure: rocket.endpoints().all(|e| e.is_tls()),
                 config: rocket.config(),
             }
         }
@@ -252,11 +252,11 @@ impl<'a> CookieJar<'a> {
     /// ```
     pub fn get_pending(&self, name: &str) -> Option<Cookie<'static>> {
         let ops = self.ops.lock();
-        for op in ops.iter().rev().filter(|op| op.cookie().name() == name) {
-            match op {
-                Op::Add(c, _) => return Some(c.clone()),
-                Op::Remove(_) => return None,
-            }
+        if let Some(op) = ops.iter().rev().find(|op| op.cookie().name() == name) {
+            return match op {
+                Op::Add(c, _) => Some(c.clone()),
+                Op::Remove(_) => None,
+            };
         }
 
         drop(ops);
